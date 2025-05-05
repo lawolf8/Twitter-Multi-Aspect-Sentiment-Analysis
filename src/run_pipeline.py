@@ -12,46 +12,69 @@ import argparse
 import subprocess
 import logging
 import time
+from datetime import datetime
+from pathlib import Path
+
+# Add src directory to Python path
+src_dir = os.path.dirname(os.path.abspath(__file__))
+sys.path.append(src_dir)
+
+from scripts.compare_models import print_model_comparison, save_report_to_file
 
 # Configure logging
 logging.basicConfig(
     level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler('pipeline.log'),
+        logging.StreamHandler()
+    ]
 )
-logger = logging.getLogger(__name__)
 
-def run_script(script_name, script_args=None, timeout=1800):
-    """Run a Python script with arguments."""
-    if script_args is None:
-        script_args = []
-    
-    script_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 
-                              'scripts', script_name)
-    command = [sys.executable, script_path] + script_args
-    
-    logger.info(f"Running {script_name} with args: {' '.join(script_args)}")
+def run_script(script_name, args=None, timeout=None):
+    """Run a Python script and capture its output."""
+    script_path = os.path.join(src_dir, 'scripts', script_name)
+    if not os.path.exists(script_path):
+        logging.error(f"Script not found: {script_path}")
+        return False
     
     try:
-        start_time = time.time()
-        process = subprocess.run(
-            command,
-            check=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+        # Run the script with Python executable from current environment
+        cmd = [sys.executable, script_path]
+        
+        # Add any additional arguments
+        if args:
+            cmd.extend(args)
+        
+        # Log the full command being run
+        logging.info(f"Running command: {' '.join(cmd)}")
+        
+        # Use timeout in subprocess call, but don't add it as an argument to the script
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
             text=True,
-            timeout=timeout  # Add timeout to prevent hanging
+            check=True,
+            timeout=timeout  # Use timeout for subprocess management, not as a script arg
         )
-        execution_time = time.time() - start_time
-        logger.info(f"Script execution time: {execution_time:.2f} seconds")
-        logger.info(f"{script_name} completed successfully")
-        return True, process.stdout
-    except subprocess.TimeoutExpired:
-        logger.error(f"Timeout after {timeout} seconds while running {script_name}")
-        return False, f"Timeout after {timeout} seconds"
+        
+        # Log the output
+        if result.stdout:
+            logging.info(f"Output from {script_name}:\n{result.stdout}")
+        if result.stderr:
+            logging.warning(f"Errors from {script_name}:\n{result.stderr}")
+        
+        return True
     except subprocess.CalledProcessError as e:
-        logger.error(f"Error running {script_name}: {e}")
-        logger.error(f"stderr: {e.stderr}")
-        return False, e.stderr
+        logging.error(f"Error running {script_name}: {e}")
+        if e.stdout:
+            logging.error(f"Output: {e.stdout}")
+        if e.stderr:
+            logging.error(f"Errors: {e.stderr}")
+        return False
+    except subprocess.TimeoutExpired as e:
+        logging.error(f"Timeout expired running {script_name} after {timeout} seconds")
+        return False
 
 def main():
     """Main function to parse arguments and run the pipeline."""
@@ -63,25 +86,19 @@ def main():
         "--mode",
         type=str,
         choices=[
-            "train_mlp_basic", 
-            "train_mlp_enhanced", 
-            "train_roberta", 
-            "train_kernel", 
-            "train_pca",
-            "train_all", 
-            "test", 
-            "compare"
+            "train_mlp_basic", "train_mlp_enhanced", "train_roberta",
+            "train_kernel", "train_pca", "train_lstm", "train_lstm_roberta",
+            "train_all", "test", "test_all", "compare"
         ],
-        default="compare",
+        required=True,
         help="Pipeline mode to run"
     )
     
     parser.add_argument(
         "--test_model",
         type=str,
-        choices=["mlp_basic", "mlp_enhanced", "roberta", "kernel", "pca"],
-        default="mlp_enhanced",
-        help="Model to test (when mode is 'test')"
+        choices=["mlp_basic", "mlp_enhanced", "roberta", "kernel", "pca", "lstm", "lstm_roberta"],
+        help="Model to test (required for test mode)"
     )
     
     parser.add_argument(
@@ -126,124 +143,297 @@ def main():
     
     args = parser.parse_args()
     
-    # Common args for all scripts - excluding timeout
-    common_args = [
-        "--sample_size", str(args.sample_size),
-        "--verbose", str(args.verbose)
-    ]
-    
-    # Script mapping
+    # Map of model names to their script files
     script_mapping = {
         "mlp_basic": "mlp_basic_main.py",
         "mlp_enhanced": "mlp_enhanced_main.py",
         "roberta": "roberta_main.py",
         "kernel": "kernel_approximation_main.py",
-        "pca": "randomized_pca_main.py"
+        "pca": "randomized_pca_main.py",
+        "lstm": "lstm_main.py",
+        "lstm_roberta": "lstm_roberta_main.py"
     }
     
     # Run the appropriate pipeline component
     if args.mode == "train_mlp_basic":
-        success, output = run_script(script_mapping["mlp_basic"], common_args, timeout=args.timeout)
+        # Common args for this mode
+        train_args = [
+            "--sample_size", str(args.sample_size),
+            "--verbose", str(args.verbose)
+        ]
+        success = run_script(script_mapping["mlp_basic"], args=train_args, timeout=args.timeout)
         if success:
-            logger.info("MLP Basic model training completed")
+            logging.info("MLP Basic model training completed")
     
     elif args.mode == "train_mlp_enhanced":
-        success, output = run_script(script_mapping["mlp_enhanced"], common_args, timeout=args.timeout)
+        # Common args for this mode
+        train_args = [
+            "--sample_size", str(args.sample_size),
+            "--verbose", str(args.verbose)
+        ]
+        success = run_script(script_mapping["mlp_enhanced"], args=train_args, timeout=args.timeout)
         if success:
-            logger.info("MLP Enhanced model training completed")
+            logging.info("MLP Enhanced model training completed")
     
     elif args.mode == "train_roberta":
-        success, output = run_script(script_mapping["roberta"], common_args, timeout=args.timeout)
+        # Common args for this mode
+        train_args = [
+            "--sample_size", str(args.sample_size),
+            "--verbose", str(args.verbose)
+        ]
+        success = run_script(script_mapping["roberta"], args=train_args, timeout=args.timeout)
         if success:
-            logger.info("RoBERTa model training completed")
+            logging.info("RoBERTa model training completed")
     
     elif args.mode == "train_kernel":
-        success, output = run_script(script_mapping["kernel"], common_args, timeout=args.timeout)
+        # Common args for this mode
+        train_args = [
+            "--sample_size", str(args.sample_size),
+            "--verbose", str(args.verbose)
+        ]
+        success = run_script(script_mapping["kernel"], args=train_args, timeout=args.timeout)
         if success:
-            logger.info("Kernel Approximation model training completed")
+            logging.info("Kernel Approximation model training completed")
     
     elif args.mode == "train_pca":
-        success, output = run_script(script_mapping["pca"], common_args, timeout=args.timeout)
+        # Common args for this mode
+        train_args = [
+            "--sample_size", str(args.sample_size),
+            "--verbose", str(args.verbose)
+        ]
+        success = run_script(script_mapping["pca"], args=train_args, timeout=args.timeout)
         if success:
-            logger.info("Randomized PCA model training completed")
+            logging.info("Randomized PCA model training completed")
+    
+    elif args.mode == "train_lstm":
+        # Common args for this mode
+        train_args = [
+            "--sample_size", str(args.sample_size),
+            "--verbose", str(args.verbose),
+            "--mode", "train"
+        ]
+        success = run_script(script_mapping["lstm"], args=train_args, timeout=args.timeout)
+        if success:
+            logging.info("LSTM model training completed")
+    
+    elif args.mode == "train_lstm_roberta":
+        # Common args for this mode
+        train_args = [
+            "--sample_size", str(args.sample_size),
+            "--verbose", str(args.verbose),
+            "--mode", "train"
+        ]
+        success = run_script(script_mapping["lstm_roberta"], args=train_args, timeout=args.timeout)
+        if success:
+            logging.info("LSTM-RoBERTa model training completed")
     
     elif args.mode == "train_all":
         # Train models
         successes = {}
         
         # MLP Basic model
-        success1, _ = run_script(script_mapping["mlp_basic"], common_args, timeout=args.timeout)
+        train_args = [
+            "--sample_size", str(args.sample_size),
+            "--verbose", str(args.verbose)
+        ]
+        success1 = run_script(script_mapping["mlp_basic"], args=train_args, timeout=args.timeout)
         successes["mlp_basic"] = success1
         
         # MLP Enhanced model
-        success2, _ = run_script(script_mapping["mlp_enhanced"], common_args, timeout=args.timeout)
+        success2 = run_script(script_mapping["mlp_enhanced"], args=train_args, timeout=args.timeout)
         successes["mlp_enhanced"] = success2
         
         # Kernel Approximation model
-        success3, _ = run_script(script_mapping["kernel"], common_args, timeout=args.timeout)
+        success3 = run_script(script_mapping["kernel"], args=train_args, timeout=args.timeout)
         successes["kernel"] = success3
         
         # Randomized PCA model
-        success4, _ = run_script(script_mapping["pca"], common_args, timeout=args.timeout)
+        success4 = run_script(script_mapping["pca"], args=train_args, timeout=args.timeout)
         successes["pca"] = success4
         
-        # RoBERTa model (optional due to higher resource requirements)
+        # LSTM and transformer models (optional due to higher resource requirements)
         if args.include_roberta or args.include_all:
-            # Reduce sample size for RoBERTa to avoid excessive training time
-            roberta_args = [
-                "--sample_size", str(min(args.sample_size, 5000)),  # Cap at 5000 for RoBERTa
+            # Determine sample size for transformer models
+            transformer_sample_size = min(args.sample_size, 20000) if args.sample_size > 20000 else args.sample_size
+            transformer_args = [
+                "--sample_size", str(transformer_sample_size),
                 "--verbose", str(args.verbose)
             ]
             
-            # Train RoBERTa model 
-            success5, _ = run_script(script_mapping["roberta"], roberta_args, timeout=args.timeout)
-            successes["roberta"] = success5
+            # LSTM models require mode parameter
+            lstm_args = transformer_args + ["--mode", "train"]
+            
+            # Train additional models if requested
+            if args.include_roberta or args.include_all:
+                # Use longer timeout for transformer models
+                transformer_timeout = max(args.timeout, 3600)  # At least 1 hour
+                
+                # RoBERTa model
+                success5 = run_script(script_mapping["roberta"], args=transformer_args, timeout=transformer_timeout)
+                successes["roberta"] = success5
+                
+                # LSTM model
+                success6 = run_script(script_mapping["lstm"], args=lstm_args, timeout=transformer_timeout)
+                successes["lstm"] = success6
+                
+                # LSTM-RoBERTa model
+                success7 = run_script(script_mapping["lstm_roberta"], args=lstm_args, timeout=transformer_timeout)
+                successes["lstm_roberta"] = success7
         
         # Count successful trainings
         successful_count = sum(1 for success in successes.values() if success)
         
         if successful_count > 0:
-            logger.info(f"{successful_count} models trained successfully")
+            logging.info(f"{successful_count} models trained successfully")
             
             # Run comparison
-            compare_args = ["--timeout", str(args.timeout)]
+            compare_args = [
+                "--sample_size", str(args.sample_size),
+                "--timeout", str(args.timeout),
+                "--verbose", str(args.verbose)
+            ]
             
-            if args.include_all or args.include_roberta and successes.get("roberta", False):
+            if args.include_all:
+                compare_args.append("--include_all")
+            elif args.include_roberta:
                 compare_args.append("--include_roberta")
                 
-            run_script("compare_models.py", compare_args, timeout=args.timeout)
+            run_script("compare_models.py", args=compare_args)
         else:
-            logger.error("All model trainings failed")
+            logging.error("All model trainings failed")
+
+    elif args.mode == "test_all":
+        # Test all existing models
+        successes = {}
+        
+        # Common args for test mode
+        test_args = [
+            "--sample_size", str(args.sample_size),
+            "--verbose", str(args.verbose)
+        ]
+        
+        # Specific args for LSTM models (no verbose parameter)
+        lstm_test_args = [
+            "--sample_size", str(args.sample_size),
+            "--mode", "test"
+        ]
+        
+        # MLP Basic model
+        success1 = run_script(script_mapping["mlp_basic"], args=test_args, timeout=args.timeout)
+        successes["mlp_basic"] = success1
+        
+        # MLP Enhanced model
+        success2 = run_script(script_mapping["mlp_enhanced"], args=test_args, timeout=args.timeout)
+        successes["mlp_enhanced"] = success2
+        
+        # Kernel Approximation model
+        success3 = run_script(script_mapping["kernel"], args=test_args, timeout=args.timeout)
+        successes["kernel"] = success3
+        
+        # Randomized PCA model
+        success4 = run_script(script_mapping["pca"], args=test_args, timeout=args.timeout)
+        successes["pca"] = success4
+        
+        # LSTM and transformer models
+        if args.include_roberta or args.include_all:
+            # Determine timeout for transformer models
+            transformer_timeout = max(args.timeout, 3600)  # At least 1 hour
+            
+            # RoBERTa model
+            success5 = run_script(script_mapping["roberta"], args=test_args, timeout=transformer_timeout)
+            successes["roberta"] = success5
+            
+            # LSTM model
+            success6 = run_script(script_mapping["lstm"], args=lstm_test_args, timeout=transformer_timeout)
+            successes["lstm"] = success6
+            
+            # LSTM-RoBERTa model
+            success7 = run_script(script_mapping["lstm_roberta"], args=lstm_test_args, timeout=transformer_timeout)
+            successes["lstm_roberta"] = success7
+        
+        # Count successful tests
+        successful_count = sum(1 for success in successes.values() if success)
+        
+        if successful_count > 0:
+            logging.info(f"{successful_count} models tested successfully")
+            
+            # Run comparison after testing
+            compare_args = [
+                "--sample_size", str(args.sample_size),
+                "--timeout", str(args.timeout),
+                "--verbose", str(args.verbose),
+                "--skip_training"  # Skip training as we've just tested
+            ]
+            
+            if args.include_all:
+                compare_args.append("--include_all")
+            elif args.include_roberta:
+                compare_args.append("--include_roberta")
+                
+            run_script("compare_models.py", args=compare_args)
+        else:
+            logging.error("All model tests failed")
 
     elif args.mode == "test":
         # Test the specified model
-        if args.test_model in script_mapping:
-            test_script = script_mapping[args.test_model]
-            success, output = run_script(test_script, common_args, timeout=args.timeout)
-            if success:
-                logger.info(f"Testing {args.test_model} model completed")
+        if not args.test_model:
+            logging.error("No test model specified. Use --test_model to specify which model to test.")
+            return
+        
+        # Common args for test mode
+        test_args = [
+            "--sample_size", str(args.sample_size)
+        ]
+        
+        # Add verbose parameter for models that support it
+        if args.test_model not in ["lstm", "lstm_roberta"]:
+            test_args.extend(["--verbose", str(args.verbose)])
+        
+        # Add mode=test for LSTM models
+        if args.test_model in ["lstm", "lstm_roberta"]:
+            test_args.extend(["--mode", "test"])
+        
+        # Select script based on the model
+        script = script_mapping.get(args.test_model)
+        if not script:
+            logging.error(f"Unknown model: {args.test_model}")
+            return
+        
+        # Adjust timeout for transformer models
+        model_timeout = args.timeout
+        if args.test_model in ["roberta", "lstm_roberta"]:
+            model_timeout = max(args.timeout, 3600)  # At least 1 hour for transformer models
+        
+        success = run_script(script, args=test_args, timeout=model_timeout)
+        if success:
+            logging.info(f"{args.test_model.capitalize()} model testing completed")
         else:
-            logger.error(f"Unknown model: {args.test_model}")
-    
+            logging.error(f"{args.test_model.capitalize()} model testing failed")
+
     elif args.mode == "compare":
-        compare_args = []
-        if args.include_roberta:
-            compare_args.append("--include_roberta")
+        # Compare all models
+        compare_args = [
+            "--sample_size", str(args.sample_size),
+            "--verbose", str(args.verbose),
+            "--timeout", str(args.timeout)
+        ]
         
         if args.include_all:
             compare_args.append("--include_all")
-        
-        compare_args.extend(["--sample_size", str(args.sample_size), 
-                             "--verbose", str(args.verbose)])
+        elif args.include_roberta:
+            compare_args.append("--include_roberta")
         
         if args.skip_training:
             compare_args.append("--skip_training")
-            
-        success, output = run_script("compare_models.py", compare_args, timeout=args.timeout)
+        
+        success = run_script("compare_models.py", args=compare_args)
         if success:
-            logger.info("Model comparison completed")
+            logging.info("Model comparison completed")
+        else:
+            logging.error("Model comparison failed")
     
-    logger.info("Pipeline execution completed")
+    else:
+        logging.error(f"Unknown mode: {args.mode}")
 
 if __name__ == "__main__":
     main() 
